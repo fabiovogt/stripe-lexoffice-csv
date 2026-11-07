@@ -13,11 +13,14 @@ def transaction(kind, date, amount='10,00', fee='0,00'):
 
 
 class MonthlyFeesTest(unittest.TestCase):
-    def export(self, rows, aggregate):
+    def export(self, rows, aggregate, fees_only=False):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / 'export.csv'
-            with patch('sys.argv', ['main.py']), patch.object(main, 'STRIPE_METHOD', 'CSV'), patch.object(main, 'SUM_FEES', aggregate), patch.object(main, 'get_transactions_data', return_value=rows), patch.object(main, 'generate_export_filename', return_value=str(output)), patch.object(main, 'getCustomerByPayment', return_value='Testkunde'), patch.object(main, 'createDefaultDescription', return_value='Testgebühr'), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            with patch('sys.argv', ['main.py'] + (['--fees-only'] if fees_only else [])), patch.object(main, 'STRIPE_METHOD', 'CSV'), patch.object(main, 'SUM_FEES', aggregate), patch.object(main, 'get_transactions_data', return_value=rows), patch.object(main, 'generate_export_filename', return_value=str(output)), patch.object(main, 'getCustomerByPayment', return_value='Testkunde'), patch.object(main, 'createDefaultDescription', return_value='Testgebühr'), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 main.main()
+            if fees_only:
+                output = output.with_name('export_fees_only.csv')
+                self.assertFalse((Path(directory) / 'export.csv').exists())
             with output.open(newline='', encoding='utf-8') as handle:
                 return list(csv.DictReader(handle, delimiter=';'))
 
@@ -33,14 +36,18 @@ class MonthlyFeesTest(unittest.TestCase):
         ]
         exported = self.export(rows, True)
         fees = [r for r in exported if r['Auftraggeber / Empfänger'] == main.STRIPE_NAME]
-        self.assertEqual(len(fees), 6)
-        self.assertEqual([r['Betrag'] for r in fees], ['-0.1', '-0.5', '-0.7', '-0.3', '-0.4', '-0.6'])
-        self.assertEqual(fees[3]['Buchungsdatum'], '2027-01-31 00:00:00')
+        self.assertEqual(len(fees), 4)
+        self.assertEqual([r['Verwendungszweck'] for r in fees], [
+            'Stripe Processing Fees (2026-12)', 'Billing Usage Fee (2026-12)',
+            'Stripe Processing Fees (2027-01)', 'Billing Usage Fee (2027-01)',
+        ])
+        self.assertEqual([r['Betrag'] for r in fees], ['-0.6', '-0.7', '-0.7', '-0.6'])
+        self.assertEqual(fees[2]['Buchungsdatum'], '2027-01-31 00:00:00')
         for row in fees:
             self.assertIn(row['Buchungsdatum'][:7], row['Verwendungszweck'])
             self.assertEqual(row['Wertstellungsdatum'], row['Buchungsdatum'][:7] + '-31 00:00:00')
             self.assertEqual(float(row['Betrag']), -float(row['Soll Betrag (Ausgabe)']))
-        self.assertEqual(len(exported), 11)
+        self.assertEqual(len(exported), 9)
 
     def test_individual_fees_unchanged(self):
         exported = self.export([
@@ -73,7 +80,7 @@ class MonthlyFeesTest(unittest.TestCase):
                     row[10] = '2028-03-01 00:00:00'
                 exported = self.export(rows, True)
                 fees = [r for r in exported if r['Auftraggeber / Empfänger'] == main.STRIPE_NAME]
-                self.assertEqual(len(fees), 3)
+                self.assertEqual(len(fees), 2)
                 for fee in fees:
                     self.assertEqual(fee['Wertstellungsdatum'], expected)
                     self.assertEqual(fee['Buchungsdatum'], expected)

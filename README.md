@@ -117,12 +117,12 @@ python main.py --start-date 2024-01-15 --end-date 2024-01-21
 
 Im API-Modus werden positive PayPal-Zahlungen mit expliziten `PayPal fees` in den Stripe-`fee_details` als Geldtransit von PayPal zu Stripe exportiert. Der Transferbetrag ist der Bruttobetrag abzüglich der PayPal-Gebühr. Die bereits auf dem PayPal-Konto erfasste PayPal-Gebühr wird nicht erneut als Stripe-Gebühr ausgegeben. Zusätzliche Stripe-Gebühren bleiben separat erhalten, auch bei monatlicher Aggregation.
 
-Beispiel: 9,00 € brutto − 0,66 € PayPal-Gebühr = 8,34 € Transfer; zusätzlich 0,12 € Stripe-Gebühr ergibt 8,22 € Stripe-Saldoänderung. Bei widersprüchlichen Gebührenbestandteilen wird der Export abgebrochen. Der CSV-Eingabemodus enthält diese API-Gebührendetails nicht und bleibt unverändert. Erstattungen werden durch diese Regel nicht verändert.
+Beispiel: 9,00 € brutto − 0,66 € PayPal-Gebühr = 8,34 € Transfer; zusätzlich 0,12 € Stripe-Gebühr ergibt 8,22 € Stripe-Saldoänderung. Bei widersprüchlichen Gebührenbestandteilen wird der Export abgebrochen. Der CSV-Eingabemodus enthält diese API-Gebührendetails nicht und bleibt unverändert. PayPal-Gebührenerstattungen werden ebenfalls aus der Stripe-Gebührensumme herausgerechnet und im Rücktransfer berücksichtigt: −5,00 € Erstattung mit −0,15 € PayPal-Gebühr ergibt −4,85 € Geldtransit von Stripe zu PayPal. Zusätzliche Stripe-Gebühren bleiben erhalten.
 
 ### SUM_FEES
 
 - **`false`**: Erstellt für jede Transaktion eine separate Gebührenzeile
-- **`true`**: Fasst Gebühren je Buchungsmonat (YYYY-MM) getrennt nach Charges, Payments und Billing Usage Fees zusammen. Jede Summenzeile nennt den Monat im Verwendungszweck. Buchungsdatum und Wertstellungsdatum liegen immer auf dem letzten Tag des betreffenden Buchungsmonats.
+- **`true`**: Fasst Gebühren je Buchungsmonat (YYYY-MM) mit einer gemeinsamen Position für Charges und Payments sowie einer separaten Position für Billing Usage Fees zusammen. Jede Summenzeile nennt den Monat im Verwendungszweck. Buchungsdatum und Wertstellungsdatum liegen immer auf dem letzten Tag des betreffenden Buchungsmonats.
 
 ### Beispiel-Ausgaben
 
@@ -398,3 +398,15 @@ Die generierten deutschen Beschreibungen sind speziell für LexOffice optimiert:
 - ✅ Basic CSV-Import
 - ✅ Stripe-Kunden-Mapping
 - ✅ LexOffice-Format-Export
+
+Der API-Datumsbereich schließt Start- und Enddatum vollständig ein. Beispielsweise enthält `--end-date 2026-10-31` auch alle Buchungen am 31. Oktober (bis vor Mitternacht des Folgetags, lokale Zeitzone).
+
+### Nur Gebühren exportieren
+
+Mit `--fees-only` enthält die CSV ausschließlich Gebühren und keine Kundenzahlungen, Transfers oder Auszahlungen:
+
+```bash
+venv/bin/python main.py --start-date 2026-10-01 --end-date 2026-10-31 --fees-only
+```
+
+Ausgabe: `export_2026-10-01_2026-10-31_fees_only.csv`. Die normale Exportdatei bleibt erhalten. `SUM_FEES=true` fasst Processing Fees monatlich zusammen und gibt Billing Usage Fees separat aus; `false` gibt Gebühren einzeln aus. Bereits bei PayPal erfasste Gebühren und Gebührenerstattungen bleiben ausgeschlossen.

@@ -9,7 +9,7 @@ import os
 from dotenv import load_dotenv
 import argparse
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from progress import Progress
 
@@ -384,11 +384,13 @@ def split_paypal_transfer(transaction):
     """Remove PayPal passthrough fees already booked on the PayPal account.
 
     Stripe processing fees stay separate, preserving amount - fee == net.
-    Only positive payments with explicit PayPal fee details are adjusted.
+    Payments and refunds with explicit PayPal fee details are adjusted.
     """
     amount = transaction['amount']
     fee = transaction['fee']
-    if amount <= 0 or transaction['type'] not in ('payment', 'charge'):
+    is_payment = amount > 0 and transaction['type'] in ('payment', 'charge')
+    is_refund = amount < 0 and transaction['type'] in ('payment_refund', 'refund', 'payment_failure_refund')
+    if not (is_payment or is_refund):
         return amount, fee, False
     details = transaction.get('fee_details') or []
     paypal_details = [detail for detail in details
@@ -400,7 +402,9 @@ def split_paypal_transfer(transaction):
             or sum(detail['amount'] for detail in details) != fee):
         raise ValueError('PayPal fee details do not reconcile with the Stripe transaction.')
     paypal_fee = sum(detail['amount'] for detail in paypal_details)
-    if not 0 <= paypal_fee <= fee or paypal_fee > amount:
+    valid_payment_fee = is_payment and 0 <= paypal_fee <= fee and paypal_fee <= amount
+    valid_refund_fee = is_refund and amount <= paypal_fee <= 0
+    if not (valid_payment_fee or valid_refund_fee):
         raise ValueError('Unexpected PayPal fee amount; export stopped to prevent incorrect totals.')
     return amount - paypal_fee, fee - paypal_fee, True
 
@@ -417,7 +421,8 @@ def fetch_balance_transactions(start_date, end_date):
 
     # Convert dates to Unix timestamps
     start_timestamp = int(start_date.timestamp())
-    end_timestamp = int(end_date.timestamp())
+    # Include the complete end date; the following midnight is exclusive.
+    end_timestamp = int((end_date + timedelta(days=1)).timestamp())
 
     print(f"Fetching balance transactions from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}...")
 
@@ -426,7 +431,7 @@ def fetch_balance_transactions(start_date, end_date):
         balance_transactions = client.BalanceTransaction.list(
             created={
                 'gte': start_timestamp,
-                'lte': end_timestamp
+                'lt': end_timestamp
             },
             limit=100
         )
@@ -651,6 +656,7 @@ def main():
     parser = argparse.ArgumentParser(description='Stripe to LexOffice CSV Converter')
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD) for API retrieval')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD) for API retrieval')
+    parser.add_argument('--fees-only', action='store_true', help='Export only fees to a separate *_fees_only.csv file')
 
     args = parser.parse_args()
 
@@ -671,6 +677,9 @@ def main():
 
     # Generate export filename
     export_filename = generate_export_filename(start_date, end_date)
+    if args.fees_only:
+        stem, extension = os.path.splitext(export_filename)
+        export_filename = f'{stem}_fees_only{extension}'
 
     print(f"Configuration:")
     print(f"  STRIPE_METHOD: {STRIPE_METHOD}")
@@ -693,15 +702,17 @@ def main():
             source = line[2]
             amount = line[3]
 
-            customer = getCustomerByPayment(source)
+            customer = STRIPE_NAME if args.fees_only else getCustomerByPayment(source)
             # --> created (utc)
             accounting_date = line[9]
             # --> available_on (utc)
             value_date = line[10]
             # --> description from original source or balance transaction
             description = line[11]
-            if len(line) > 12 and line[12] is True:
-                description = f'Geldtransit von PayPal zu Stripe - {customer}'
+            paypal_transfer = len(line) > 12 and line[12] is True
+            if paypal_transfer:
+                direction = 'von PayPal zu Stripe' if toMoney(amount) >= 0 else 'von Stripe zu PayPal (Rückerstattung)'
+                description = f'Geldtransit {direction} - {customer}'
                 customer = 'PayPal'
 
             # Handle billing usage fees (stripe_fee) when SUM_FEES is enabled
@@ -712,11 +723,11 @@ def main():
                 continue
 
             # For refunds, payment_failure_refunds, payouts and stripe_fees, always use German descriptions
-            if transType in ['refund', 'payment_failure_refund', 'payout', 'stripe_fee', 'application_fee']:
+            if not paypal_transfer and transType in ['refund', 'payment_failure_refund', 'payout', 'stripe_fee', 'application_fee']:
                 description = createDefaultDescription(source, transType, toMoney(amount), customer, accounting_date, line[11])
             else:
                 # If description is empty, try to get it from the original source
-                if not description or description.strip() == '':
+                if not args.fees_only and (not description or description.strip() == ''):
                     description = getDescriptionFromSource(source, transType)
 
                 # If still empty, create a default description
@@ -733,23 +744,23 @@ def main():
             else:
                 haben_betrag = amount_float  # Income (positive amount stays positive in Haben)
 
-            everhypeCSV.append([
-                accounting_date,  # Buchungsdatum
-                customer,         # Auftraggeber / Empfänger
-                description,      # Verwendungszweck
-                amount_float,     # Betrag (original amount)
-                soll_betrag,      # Soll Betrag (Ausgabe)
-                haben_betrag,     # Haben Betrag (Einnahme)
-                value_date,       # Wertstellungsdatum
-            ])
+            if not args.fees_only or transType in ('stripe_fee', 'stripe_fx_fee', 'tax_fee', 'application_fee', 'application_fee_refund'):
+                everhypeCSV.append([
+                    accounting_date,  # Buchungsdatum
+                    customer,         # Auftraggeber / Empfänger
+                    description,      # Verwendungszweck
+                    amount_float,     # Betrag (original amount)
+                    soll_betrag,      # Soll Betrag (Ausgabe)
+                    haben_betrag,     # Haben Betrag (Einnahme)
+                    value_date,       # Wertstellungsdatum
+                ])
 
             # Processing fee handling (from fee column)
             if line[4] != '0,00':
                 fee_amount = toMoney(line[4])
 
                 if SUM_FEES:
-                    category = 'charge' if transType == 'charge' else 'payment'
-                    add_monthly_fee(monthly_fees, category, fee_amount, accounting_date)
+                    add_monthly_fee(monthly_fees, 'processing', fee_amount, accounting_date)
                 else:
                     # Create individual fee line (original behavior)
                     fee_description = f'Fees for payment {id} -- {description}'
@@ -767,8 +778,7 @@ def main():
 
     if SUM_FEES:
         labels = {
-            'charge': 'Stripe Processing Fees for Charges',
-            'payment': 'Stripe Processing Fees for Payments',
+            'processing': 'Stripe Processing Fees',
             'billing': 'Billing Usage Fee',
         }
         for month in sorted(monthly_fees):
