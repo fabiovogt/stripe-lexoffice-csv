@@ -63,23 +63,23 @@ def getCustomerByPayment(payment_id: str):
         # Handle different types of Stripe objects
         if payment_id.startswith('ch_'):
             # It's a charge
-            charge = client.Charge.retrieve(payment_id)
+            charge = client.Charge.retrieve(payment_id).to_dict()
             # Try billing_details first
             if charge.get('billing_details', {}).get('name'):
                 return charge['billing_details']['name']
             # Try customer object if available
             if charge.get('customer'):
                 try:
-                    customer = client.Customer.retrieve(charge['customer'])
+                    customer = client.Customer.retrieve(charge['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 except:
                     pass
             # Try payment intent if available
             if charge.get('payment_intent'):
                 try:
-                    pi = client.PaymentIntent.retrieve(charge['payment_intent'])
+                    pi = client.PaymentIntent.retrieve(charge['payment_intent']).to_dict()
                     if pi.get('customer'):
-                        customer = client.Customer.retrieve(pi['customer'])
+                        customer = client.Customer.retrieve(pi['customer']).to_dict()
                         return customer.get('name') or customer.get('email', STRIPE_NAME)
                 except:
                     pass
@@ -87,18 +87,18 @@ def getCustomerByPayment(payment_id: str):
             
         elif payment_id.startswith('pi_'):
             # It's a payment intent
-            payment_intent = client.PaymentIntent.retrieve(payment_id)
+            payment_intent = client.PaymentIntent.retrieve(payment_id).to_dict()
             # Try to get customer from the payment intent
             if payment_intent.get('customer'):
                 try:
-                    customer = client.Customer.retrieve(payment_intent['customer'])
+                    customer = client.Customer.retrieve(payment_intent['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 except:
                     pass
             # Try to get the latest charge from this payment intent
             if payment_intent.get('latest_charge'):
                 try:
-                    charge = client.Charge.retrieve(payment_intent['latest_charge'])
+                    charge = client.Charge.retrieve(payment_intent['latest_charge']).to_dict()
                     if charge.get('billing_details', {}).get('name'):
                         return charge['billing_details']['name']
                 except:
@@ -109,9 +109,9 @@ def getCustomerByPayment(payment_id: str):
             # Could be various payment-related objects, try different approaches
             try:
                 # Try as PaymentMethod first
-                pm = client.PaymentMethod.retrieve(payment_id)
+                pm = client.PaymentMethod.retrieve(payment_id).to_dict()
                 if pm.get('customer'):
-                    customer = client.Customer.retrieve(pm['customer'])
+                    customer = client.Customer.retrieve(pm['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 return STRIPE_NAME
             except:
@@ -120,10 +120,10 @@ def getCustomerByPayment(payment_id: str):
                 
         elif payment_id.startswith('cs_'):
             # It's a checkout session
-            session = client.checkout.Session.retrieve(payment_id)
+            session = client.checkout.Session.retrieve(payment_id).to_dict()
             if session.get('customer'):
                 try:
-                    customer = client.Customer.retrieve(session['customer'])
+                    customer = client.Customer.retrieve(session['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 except:
                     pass
@@ -137,10 +137,10 @@ def getCustomerByPayment(payment_id: str):
             
         elif payment_id.startswith('in_'):
             # It's an invoice
-            invoice = client.Invoice.retrieve(payment_id)
+            invoice = client.Invoice.retrieve(payment_id).to_dict()
             if invoice.get('customer'):
                 try:
-                    customer = client.Customer.retrieve(invoice['customer'])
+                    customer = client.Customer.retrieve(invoice['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 except:
                     pass
@@ -148,10 +148,10 @@ def getCustomerByPayment(payment_id: str):
             
         elif payment_id.startswith('sub_'):
             # It's a subscription
-            subscription = client.Subscription.retrieve(payment_id)
+            subscription = client.Subscription.retrieve(payment_id).to_dict()
             if subscription.get('customer'):
                 try:
-                    customer = client.Customer.retrieve(subscription['customer'])
+                    customer = client.Customer.retrieve(subscription['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 except:
                     pass
@@ -160,11 +160,11 @@ def getCustomerByPayment(payment_id: str):
         else:
             # For unknown types, try as charge first (legacy behavior)
             try:
-                charge = client.Charge.retrieve(payment_id)
+                charge = client.Charge.retrieve(payment_id).to_dict()
                 if charge.get('billing_details', {}).get('name'):
                     return charge['billing_details']['name']
                 if charge.get('customer'):
-                    customer = client.Customer.retrieve(charge['customer'])
+                    customer = client.Customer.retrieve(charge['customer']).to_dict()
                     return customer.get('name') or customer.get('email', STRIPE_NAME)
                 return STRIPE_NAME
             except:
@@ -188,7 +188,7 @@ def getPaymentMethodFromSource(source_id: str):
         
         if source_id.startswith('ch_'):
             # It's a charge
-            charge = client.Charge.retrieve(source_id)
+            charge = client.Charge.retrieve(source_id).to_dict()
             payment_method = charge.get('payment_method_details', {})
             if payment_method.get('card'):
                 brand = payment_method['card'].get('brand', 'Karte').capitalize()
@@ -216,7 +216,7 @@ def getProductInfoFromSource(source_id: str):
         
         if source_id.startswith('ch_'):
             # It's a charge
-            charge = client.Charge.retrieve(source_id)
+            charge = client.Charge.retrieve(source_id).to_dict()
             
             # Try to get product from metadata first
             metadata = charge.get('metadata', {})
@@ -231,7 +231,7 @@ def getProductInfoFromSource(source_id: str):
             payment_intent_id = charge.get('payment_intent')
             if payment_intent_id:
                 try:
-                    pi = client.PaymentIntent.retrieve(payment_intent_id)
+                    pi = client.PaymentIntent.retrieve(payment_intent_id).to_dict()
                     pi_metadata = pi.get('metadata', {})
                     if pi_metadata.get('product_name'):
                         return pi_metadata['product_name']
@@ -246,7 +246,7 @@ def getProductInfoFromSource(source_id: str):
             invoice_id = charge.get('invoice')
             if invoice_id:
                 try:
-                    invoice = client.Invoice.retrieve(invoice_id)
+                    invoice = client.Invoice.retrieve(invoice_id).to_dict()
                     line_items = invoice.get('lines', {}).get('data', [])
                     if line_items:
                         # Get the first line item's description or price description
@@ -290,40 +290,40 @@ def getDescriptionFromSource(source_id: str, transaction_type: str):
         # Handle different source types
         if source_id.startswith('ch_'):
             # It's a charge
-            charge = client.Charge.retrieve(source_id)
+            charge = client.Charge.retrieve(source_id).to_dict()
             description = charge.get('description', '') or charge.get('statement_descriptor', '') or ''
             if description:
                 return description
             # If charge has no description, try to get it from payment intent
             payment_intent_id = charge.get('payment_intent')
             if payment_intent_id:
-                pi = client.PaymentIntent.retrieve(payment_intent_id)
+                pi = client.PaymentIntent.retrieve(payment_intent_id).to_dict()
                 return pi.get('description', '') or pi.get('statement_descriptor', '') or ''
             return ''
         elif source_id.startswith('py_'):
             # This seems to be a checkout session or setup intent, try different approaches
             try:
                 # Try as PaymentMethod
-                pm = client.PaymentMethod.retrieve(source_id)
+                pm = client.PaymentMethod.retrieve(source_id).to_dict()
                 return pm.get('description', '') or ''
             except:
                 try:
                     # Try as Setup Intent
-                    si = client.SetupIntent.retrieve(source_id)
+                    si = client.SetupIntent.retrieve(source_id).to_dict()
                     return si.get('description', '') or si.get('statement_descriptor', '') or ''
                 except:
                     return ''
         elif source_id.startswith('pi_'):
             # It's a payment intent
-            payment_intent = client.PaymentIntent.retrieve(source_id)
+            payment_intent = client.PaymentIntent.retrieve(source_id).to_dict()
             return payment_intent.get('description', '') or payment_intent.get('statement_descriptor', '') or ''
         elif source_id.startswith('re_'):
             # It's a refund
-            refund = client.Refund.retrieve(source_id)
+            refund = client.Refund.retrieve(source_id).to_dict()
             return refund.get('reason', '') or 'Refund'
         elif source_id.startswith('cs_'):
             # It's a checkout session
-            session = client.checkout.Session.retrieve(source_id)
+            session = client.checkout.Session.retrieve(source_id).to_dict()
             return session.get('description', '') or session.get('client_reference_id', '') or ''
         else:
             # For unknown types, try to create a meaningful description from transaction type
@@ -495,7 +495,7 @@ def getRefundReason(source_id: str, transaction_type: str):
         
         if source_id.startswith('re_'):
             # It's a refund
-            refund = client.Refund.retrieve(source_id)
+            refund = client.Refund.retrieve(source_id).to_dict()
             reason = refund.get('reason', '')
             if reason == 'duplicate':
                 return 'Doppelte Zahlung'
