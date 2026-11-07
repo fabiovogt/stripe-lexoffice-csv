@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 import argparse
 from datetime import datetime
 import time
+from progress import Progress
 
 # Load environment variables from .env file
 load_dotenv()
@@ -46,6 +47,13 @@ def csv_header():
     ]
 
 
+def get_name_from_charge(charge):
+    """Return a billing name or the PayPal payer name, if supplied."""
+    billing = charge.get('billing_details') or {}
+    paypal = (charge.get('payment_method_details') or {}).get('paypal') or {}
+    return billing.get('name') or paypal.get('payer_name')
+
+
 def getCustomerByPayment(payment_id: str):
     """
     This method tries to fetch the Customer name from various Stripe objects
@@ -57,16 +65,18 @@ def getCustomerByPayment(payment_id: str):
         # Handle None or empty payment_id
         if not payment_id:
             return STRIPE_NAME
-            
+
         client = get_client()
-        
+
         # Handle different types of Stripe objects
-        if payment_id.startswith('ch_'):
+        if payment_id.startswith(('ch_', 'py_')):
             # It's a charge
             charge = client.Charge.retrieve(payment_id).to_dict()
-            # Try billing_details first
-            if charge.get('billing_details', {}).get('name'):
-                return charge['billing_details']['name']
+            # PayPal payments can use py_ Charge IDs and provide a payer name
+            # without a Stripe Customer or billing name.
+            name = get_name_from_charge(charge)
+            if name:
+                return name
             # Try customer object if available
             if charge.get('customer'):
                 try:
@@ -84,7 +94,7 @@ def getCustomerByPayment(payment_id: str):
                 except:
                     pass
             return STRIPE_NAME
-            
+
         elif payment_id.startswith('pi_'):
             # It's a payment intent
             payment_intent = client.PaymentIntent.retrieve(payment_id).to_dict()
@@ -99,25 +109,13 @@ def getCustomerByPayment(payment_id: str):
             if payment_intent.get('latest_charge'):
                 try:
                     charge = client.Charge.retrieve(payment_intent['latest_charge']).to_dict()
-                    if charge.get('billing_details', {}).get('name'):
-                        return charge['billing_details']['name']
+                    name = get_name_from_charge(charge)
+                    if name:
+                        return name
                 except:
                     pass
             return STRIPE_NAME
-            
-        elif payment_id.startswith('py_'):
-            # Could be various payment-related objects, try different approaches
-            try:
-                # Try as PaymentMethod first
-                pm = client.PaymentMethod.retrieve(payment_id).to_dict()
-                if pm.get('customer'):
-                    customer = client.Customer.retrieve(pm['customer']).to_dict()
-                    return customer.get('name') or customer.get('email', STRIPE_NAME)
-                return STRIPE_NAME
-            except:
-                # If PaymentMethod doesn't work, try other approaches
-                return STRIPE_NAME
-                
+
         elif payment_id.startswith('cs_'):
             # It's a checkout session
             session = client.checkout.Session.retrieve(payment_id).to_dict()
@@ -134,7 +132,7 @@ def getCustomerByPayment(payment_id: str):
             if customer_details.get('email'):
                 return customer_details['email']
             return STRIPE_NAME
-            
+
         elif payment_id.startswith('in_'):
             # It's an invoice
             invoice = client.Invoice.retrieve(payment_id).to_dict()
@@ -145,7 +143,7 @@ def getCustomerByPayment(payment_id: str):
                 except:
                     pass
             return STRIPE_NAME
-            
+
         elif payment_id.startswith('sub_'):
             # It's a subscription
             subscription = client.Subscription.retrieve(payment_id).to_dict()
@@ -156,7 +154,7 @@ def getCustomerByPayment(payment_id: str):
                 except:
                     pass
             return STRIPE_NAME
-            
+
         else:
             # For unknown types, try as charge first (legacy behavior)
             try:
@@ -169,7 +167,7 @@ def getCustomerByPayment(payment_id: str):
                 return STRIPE_NAME
             except:
                 return STRIPE_NAME
-                
+
     except InvalidRequestError:
         return STRIPE_NAME
     except Exception as e:
@@ -185,7 +183,7 @@ def getPaymentMethodFromSource(source_id: str):
     """
     try:
         client = get_client()
-        
+
         if source_id.startswith('ch_'):
             # It's a charge
             charge = client.Charge.retrieve(source_id).to_dict()
@@ -213,11 +211,11 @@ def getProductInfoFromSource(source_id: str):
     """
     try:
         client = get_client()
-        
+
         if source_id.startswith('ch_'):
             # It's a charge
             charge = client.Charge.retrieve(source_id).to_dict()
-            
+
             # Try to get product from metadata first
             metadata = charge.get('metadata', {})
             if metadata.get('product_name'):
@@ -226,7 +224,7 @@ def getProductInfoFromSource(source_id: str):
                 return metadata['product']
             if metadata.get('item_name'):
                 return metadata['item_name']
-            
+
             # Try to get from payment intent
             payment_intent_id = charge.get('payment_intent')
             if payment_intent_id:
@@ -241,7 +239,7 @@ def getProductInfoFromSource(source_id: str):
                         return pi_metadata['item_name']
                 except:
                     pass
-            
+
             # Try to get from invoice if available
             invoice_id = charge.get('invoice')
             if invoice_id:
@@ -261,7 +259,7 @@ def getProductInfoFromSource(source_id: str):
                             return product_data['name']
                 except:
                     pass
-                    
+
         elif source_id.startswith('py_'):
             # Try as different object types - this might be from a checkout session
             try:
@@ -270,7 +268,7 @@ def getProductInfoFromSource(source_id: str):
                 pass
             except:
                 pass
-                
+
         return ""
     except Exception as e:
         print(f"Warning: Could not fetch product info for {source_id}: {str(e)}")
@@ -286,7 +284,7 @@ def getDescriptionFromSource(source_id: str, transaction_type: str):
     """
     try:
         client = get_client()
-        
+
         # Handle different source types
         if source_id.startswith('ch_'):
             # It's a charge
@@ -365,7 +363,7 @@ def read_csv():
             "1. Create an 'import.csv' file with your Stripe data\n"
             "2. Or switch to API method: Set STRIPE_METHOD=API in the .env file"
         )
-    
+
     csvlines = []
     with open('import.csv', newline='', encoding='utf-8') as csvfile:
         reader = csv.reader(csvfile)
@@ -389,41 +387,43 @@ def fetch_balance_transactions(start_date, end_date):
     """
     client = get_client()
     transactions = []
-    
+
     # Convert dates to Unix timestamps
     start_timestamp = int(start_date.timestamp())
     end_timestamp = int(end_date.timestamp())
-    
+
     print(f"Fetching balance transactions from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}...")
-    
-    # Fetch all balance transactions in the timeframe
-    balance_transactions = client.BalanceTransaction.list(
-        created={
-            'gte': start_timestamp,
-            'lte': end_timestamp
-        },
-        limit=100
-    )
-    
-    for transaction in balance_transactions.auto_paging_iter():
-        # Convert balance transaction to CSV format
-        # Adapt Stripe Balance Transaction format
-        csv_row = [
-            transaction.id,  # id (0)
-            transaction.type,  # type (1)
-            transaction.source,  # source (2)
-            format_stripe_amount(transaction.amount),  # amount (3)
-            format_stripe_amount(transaction.fee),  # fee (4)
-            '',  # currency (5) - not used
-            '',  # net (6) - not used  
-            '',  # reporting_category (7) - not used
-            '',  # customer_facing_amount (8) - not used
-            datetime.fromtimestamp(transaction.created).strftime('%Y-%m-%d %H:%M:%S'),  # created/accounting_date (9)
-            datetime.fromtimestamp(transaction.available_on).strftime('%Y-%m-%d %H:%M:%S'),  # available_on/value_date (10)
-            transaction.description or ''  # description (11)
-        ]
-        transactions.append(csv_row)
-    
+
+    with Progress('Stripe-Transaktionen abrufen') as progress:
+        # Fetch all balance transactions in the timeframe
+        balance_transactions = client.BalanceTransaction.list(
+            created={
+                'gte': start_timestamp,
+                'lte': end_timestamp
+            },
+            limit=100
+        )
+
+        for transaction in balance_transactions.auto_paging_iter():
+            # Convert balance transaction to CSV format
+            # Adapt Stripe Balance Transaction format
+            csv_row = [
+                transaction.id,  # id (0)
+                transaction.type,  # type (1)
+                transaction.source,  # source (2)
+                format_stripe_amount(transaction.amount),  # amount (3)
+                format_stripe_amount(transaction.fee),  # fee (4)
+                '',  # currency (5) - not used
+                '',  # net (6) - not used
+                '',  # reporting_category (7) - not used
+                '',  # customer_facing_amount (8) - not used
+                datetime.fromtimestamp(transaction.created).strftime('%Y-%m-%d %H:%M:%S'),  # created/accounting_date (9)
+                datetime.fromtimestamp(transaction.available_on).strftime('%Y-%m-%d %H:%M:%S'),  # available_on/value_date (10)
+                transaction.description or ''  # description (11)
+            ]
+            transactions.append(csv_row)
+            progress.advance()
+
     print(f"Found {len(transactions)} transactions.")
     return transactions
 
@@ -436,7 +436,7 @@ def format_stripe_amount(amount_in_cents):
     """
     if amount_in_cents == 0:
         return "0,00"
-    
+
     amount_in_euros = amount_in_cents / 100
     return f"{amount_in_euros:.2f}".replace('.', ',')
 
@@ -492,7 +492,7 @@ def getRefundReason(source_id: str, transaction_type: str):
     """
     try:
         client = get_client()
-        
+
         if source_id.startswith('re_'):
             # It's a refund
             refund = client.Refund.retrieve(source_id).to_dict()
@@ -531,11 +531,11 @@ def createDefaultDescription(source_id: str, transaction_type: str, amount: floa
         from datetime import datetime
         date_obj = datetime.strptime(accounting_date.split(' ')[0], '%Y-%m-%d')
         formatted_date = date_obj.strftime('%d.%m.%Y')
-        
+
         # Format amount with German decimal separator (make amount positive for display)
         amount_abs = abs(amount)
         amount_str = f"{amount_abs:.2f}".replace('.', ',')
-        
+
         # Handle different transaction types
         if transaction_type == 'refund':
             refund_reason = getRefundReason(source_id, transaction_type)
@@ -555,18 +555,18 @@ def createDefaultDescription(source_id: str, transaction_type: str, amount: floa
                 fee_reason = " - Zahlungsabwicklung"
             elif original_description and original_description.strip():
                 fee_reason = f" - {original_description}"
-            
+
             description = f"Kontoführungsgebühr vom {formatted_date} über {amount_str}€{fee_reason}"
         else:
             # Regular payment/charge
             payment_method = getPaymentMethodFromSource(source_id)
             description = f"Zahlung vom {formatted_date} über {amount_str}€ ({payment_method}), Kunde: {customer_name}"
-            
+
             # Try to get product information for payments/charges
             product_name = getProductInfoFromSource(source_id)
             if product_name and product_name.strip():
                 description += f", Kunde hat Produkt \"{product_name}\" gekauft"
-        
+
         return description
     except Exception as e:
         # Fallback if anything goes wrong
@@ -606,38 +606,38 @@ def main():
     parser = argparse.ArgumentParser(description='Stripe to LexOffice CSV Converter')
     parser.add_argument('--start-date', type=str, help='Start date (YYYY-MM-DD) for API retrieval')
     parser.add_argument('--end-date', type=str, help='End date (YYYY-MM-DD) for API retrieval')
-    
+
     args = parser.parse_args()
-    
+
     start_date = None
     end_date = None
-    
+
     # Parse date parameters if present
     if args.start_date:
         start_date = parse_date(args.start_date)
     if args.end_date:
         end_date = parse_date(args.end_date)
-    
+
     # Validation for API method
     if STRIPE_METHOD == 'API' and (not start_date or not end_date):
         print("Error: Start and end date are required for API method!")
         print("Usage: python main.py --start-date 2024-01-01 --end-date 2024-01-31")
         return
-    
+
     # Generate export filename
     export_filename = generate_export_filename(start_date, end_date)
-    
+
     print(f"Configuration:")
     print(f"  STRIPE_METHOD: {STRIPE_METHOD}")
     print(f"  SUM_FEES: {SUM_FEES}")
     print(f"  Export filename: {export_filename}")
     if start_date and end_date:
         print(f"  Time range: {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
-    
+
     # Get transaction data
     stripeCSV = get_transactions_data(start_date, end_date)
     everhypeCSV = []
-    
+
     # Variables for fee aggregation - separate by type
     charge_fees = 0.0
     payment_fees = 0.0
@@ -648,99 +648,102 @@ def main():
     fee_accounting_date = None
     fee_value_date = None
 
-    for line in stripeCSV:
-        id = line[0]
-        transType = line[1]
-        source = line[2]
-        amount = line[3]
+    with Progress('Transaktionen verarbeiten', total=len(stripeCSV)) as progress:
+        for line in stripeCSV:
+            id = line[0]
+            transType = line[1]
+            source = line[2]
+            amount = line[3]
 
-        customer = getCustomerByPayment(source)
-        # --> created (utc)
-        accounting_date = line[9]
-        # --> available_on (utc)
-        value_date = line[10]
-        # --> description from original source or balance transaction
-        description = line[11]
-        
-        # Handle billing usage fees (stripe_fee) when SUM_FEES is enabled
-        if transType == 'stripe_fee' and SUM_FEES:
-            billing_usage_fees += abs(toMoney(amount))
-            billing_fee_descriptions.append(f'Billing fee {id}')
-            if fee_accounting_date is None:
-                fee_accounting_date = accounting_date
-                fee_value_date = value_date
-            # Skip adding to everhypeCSV - will be added as summary
-            continue
-        
-        # For refunds, payment_failure_refunds, payouts and stripe_fees, always use German descriptions
-        if transType in ['refund', 'payment_failure_refund', 'payout', 'stripe_fee', 'application_fee']:
-            description = createDefaultDescription(source, transType, toMoney(amount), customer, accounting_date, line[11])
-        else:
-            # If description is empty, try to get it from the original source
-            if not description or description.strip() == '':
-                description = getDescriptionFromSource(source, transType)
-            
-            # If still empty, create a default description
-            if not description or description.strip() == '':
-                description = createDefaultDescription(source, transType, toMoney(amount), customer, accounting_date, line[11])
+            customer = getCustomerByPayment(source)
+            # --> created (utc)
+            accounting_date = line[9]
+            # --> available_on (utc)
+            value_date = line[10]
+            # --> description from original source or balance transaction
+            description = line[11]
 
-        # Determine if this is income (positive) or expense (negative)
-        amount_float = toMoney(amount)
-        soll_betrag = ""  # Debit amount (expense)
-        haben_betrag = ""  # Credit amount (income)
-        
-        if amount_float < 0:
-            soll_betrag = abs(amount_float)  # Expense (negative amount becomes positive in Soll)
-        else:
-            haben_betrag = amount_float  # Income (positive amount stays positive in Haben)
-        
-        everhypeCSV.append([
-            accounting_date,  # Buchungsdatum
-            customer,         # Auftraggeber / Empfänger
-            description,      # Verwendungszweck
-            amount_float,     # Betrag (original amount)
-            soll_betrag,      # Soll Betrag (Ausgabe)
-            haben_betrag,     # Haben Betrag (Einnahme)
-            value_date,       # Wertstellungsdatum
-        ])
-
-        # Processing fee handling (from fee column)
-        if line[4] != '0,00':
-            fee_amount = toMoney(line[4])
-            
-            if SUM_FEES:
-                # Categorize fees by transaction type
-                if transType == 'charge':
-                    charge_fees += fee_amount
-                    charge_fee_descriptions.append(f'Processing fee for charge {id}')
-                elif transType == 'payment':
-                    payment_fees += fee_amount
-                    payment_fee_descriptions.append(f'Processing fee for payment {id}')
-                else:
-                    # Fallback for other types (refunds, etc.)
-                    if transType == 'charge':
-                        charge_fees += fee_amount
-                        charge_fee_descriptions.append(f'Fee for {transType} {id}')
-                    else:
-                        payment_fees += fee_amount
-                        payment_fee_descriptions.append(f'Fee for {transType} {id}')
-                
+            # Handle billing usage fees (stripe_fee) when SUM_FEES is enabled
+            if transType == 'stripe_fee' and SUM_FEES:
+                billing_usage_fees += abs(toMoney(amount))
+                billing_fee_descriptions.append(f'Billing fee {id}')
                 if fee_accounting_date is None:
                     fee_accounting_date = accounting_date
                     fee_value_date = value_date
+                # Skip adding to everhypeCSV - will be added as summary
+                progress.advance()
+                continue
+
+            # For refunds, payment_failure_refunds, payouts and stripe_fees, always use German descriptions
+            if transType in ['refund', 'payment_failure_refund', 'payout', 'stripe_fee', 'application_fee']:
+                description = createDefaultDescription(source, transType, toMoney(amount), customer, accounting_date, line[11])
             else:
-                # Create individual fee line (original behavior)
-                fee_description = f'Fees for payment {id} -- {description}'
-                
-                everhypeCSV.append([
-                    accounting_date,  # Buchungsdatum
-                    STRIPE_NAME,      # Auftraggeber / Empfänger
-                    fee_description,  # Verwendungszweck
-                    round(fee_amount * -1, 2),  # Betrag
-                    abs(fee_amount),  # Soll Betrag (Ausgabe) - fees are always expenses
-                    "",               # Haben Betrag (Einnahme)
-                    value_date,       # Wertstellungsdatum
-                ])
+                # If description is empty, try to get it from the original source
+                if not description or description.strip() == '':
+                    description = getDescriptionFromSource(source, transType)
+
+                # If still empty, create a default description
+                if not description or description.strip() == '':
+                    description = createDefaultDescription(source, transType, toMoney(amount), customer, accounting_date, line[11])
+
+            # Determine if this is income (positive) or expense (negative)
+            amount_float = toMoney(amount)
+            soll_betrag = ""  # Debit amount (expense)
+            haben_betrag = ""  # Credit amount (income)
+
+            if amount_float < 0:
+                soll_betrag = abs(amount_float)  # Expense (negative amount becomes positive in Soll)
+            else:
+                haben_betrag = amount_float  # Income (positive amount stays positive in Haben)
+
+            everhypeCSV.append([
+                accounting_date,  # Buchungsdatum
+                customer,         # Auftraggeber / Empfänger
+                description,      # Verwendungszweck
+                amount_float,     # Betrag (original amount)
+                soll_betrag,      # Soll Betrag (Ausgabe)
+                haben_betrag,     # Haben Betrag (Einnahme)
+                value_date,       # Wertstellungsdatum
+            ])
+
+            # Processing fee handling (from fee column)
+            if line[4] != '0,00':
+                fee_amount = toMoney(line[4])
+
+                if SUM_FEES:
+                    # Categorize fees by transaction type
+                    if transType == 'charge':
+                        charge_fees += fee_amount
+                        charge_fee_descriptions.append(f'Processing fee for charge {id}')
+                    elif transType == 'payment':
+                        payment_fees += fee_amount
+                        payment_fee_descriptions.append(f'Processing fee for payment {id}')
+                    else:
+                        # Fallback for other types (refunds, etc.)
+                        if transType == 'charge':
+                            charge_fees += fee_amount
+                            charge_fee_descriptions.append(f'Fee for {transType} {id}')
+                        else:
+                            payment_fees += fee_amount
+                            payment_fee_descriptions.append(f'Fee for {transType} {id}')
+
+                    if fee_accounting_date is None:
+                        fee_accounting_date = accounting_date
+                        fee_value_date = value_date
+                else:
+                    # Create individual fee line (original behavior)
+                    fee_description = f'Fees for payment {id} -- {description}'
+
+                    everhypeCSV.append([
+                        accounting_date,  # Buchungsdatum
+                        STRIPE_NAME,      # Auftraggeber / Empfänger
+                        fee_description,  # Verwendungszweck
+                        round(fee_amount * -1, 2),  # Betrag
+                        abs(fee_amount),  # Soll Betrag (Ausgabe) - fees are always expenses
+                        "",               # Haben Betrag (Einnahme)
+                        value_date,       # Wertstellungsdatum
+                    ])
+            progress.advance()
 
     # If SUM_FEES is enabled, add separate summarized lines for each fee type
     if SUM_FEES:
@@ -754,7 +757,7 @@ def main():
                 "",                   # Haben Betrag (Einnahme)
                 fee_value_date,       # Wertstellungsdatum
             ])
-        
+
         if payment_fees > 0:
             everhypeCSV.append([
                 fee_accounting_date,  # Buchungsdatum
@@ -765,7 +768,7 @@ def main():
                 "",                   # Haben Betrag (Einnahme)
                 fee_value_date,       # Wertstellungsdatum
             ])
-        
+
         if billing_usage_fees > 0:
             everhypeCSV.append([
                 fee_accounting_date,  # Buchungsdatum
@@ -783,7 +786,7 @@ def main():
 
         writer.writerow(csv_header())
         writer.writerows(everhypeCSV)
-    
+
     print(f"Export completed! {len(everhypeCSV)} lines written to {export_filename}.")
 
 
