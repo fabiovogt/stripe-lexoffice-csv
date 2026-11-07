@@ -1,4 +1,5 @@
 import csv
+from calendar import monthrange
 import stripe
 try:
     from stripe.error import InvalidRequestError
@@ -7,6 +8,7 @@ except ModuleNotFoundError:  # Stripe v11+
 import os
 from dotenv import load_dotenv
 import argparse
+from decimal import Decimal
 from datetime import datetime
 import time
 from progress import Progress
@@ -599,6 +601,24 @@ def generate_export_filename(start_date, end_date):
         return f'export_{timestamp}.csv'
 
 
+def add_monthly_fee(groups, category, amount, accounting_date):
+    """Aggregate by booking month, retaining the earliest booking per category."""
+    booking_date = datetime.fromisoformat(accounting_date)
+    month = booking_date.strftime('%Y-%m')
+    month_end = booking_date.replace(
+        day=monthrange(booking_date.year, booking_date.month)[1],
+        hour=0, minute=0, second=0, microsecond=0,
+    ).strftime('%Y-%m-%d %H:%M:%S')
+    group = groups.setdefault(month, {}).setdefault(category, {
+        'amount': Decimal('0'),
+        'accounting_date': accounting_date,
+        'value_date': month_end,
+    })
+    group['amount'] += Decimal(str(amount))
+    if accounting_date < group['accounting_date']:
+        group['accounting_date'] = accounting_date
+
+
 def main():
     """
     Main function with CLI argument parsing
@@ -638,15 +658,8 @@ def main():
     stripeCSV = get_transactions_data(start_date, end_date)
     everhypeCSV = []
 
-    # Variables for fee aggregation - separate by type
-    charge_fees = 0.0
-    payment_fees = 0.0
-    billing_usage_fees = 0.0
-    charge_fee_descriptions = []
-    payment_fee_descriptions = []
-    billing_fee_descriptions = []
-    fee_accounting_date = None
-    fee_value_date = None
+    # Group fees by booking month and category.
+    monthly_fees = {}
 
     with Progress('Transaktionen verarbeiten', total=len(stripeCSV)) as progress:
         for line in stripeCSV:
@@ -665,11 +678,7 @@ def main():
 
             # Handle billing usage fees (stripe_fee) when SUM_FEES is enabled
             if transType == 'stripe_fee' and SUM_FEES:
-                billing_usage_fees += abs(toMoney(amount))
-                billing_fee_descriptions.append(f'Billing fee {id}')
-                if fee_accounting_date is None:
-                    fee_accounting_date = accounting_date
-                    fee_value_date = value_date
+                add_monthly_fee(monthly_fees, 'billing', abs(toMoney(amount)), accounting_date)
                 # Skip adding to everhypeCSV - will be added as summary
                 progress.advance()
                 continue
@@ -711,25 +720,8 @@ def main():
                 fee_amount = toMoney(line[4])
 
                 if SUM_FEES:
-                    # Categorize fees by transaction type
-                    if transType == 'charge':
-                        charge_fees += fee_amount
-                        charge_fee_descriptions.append(f'Processing fee for charge {id}')
-                    elif transType == 'payment':
-                        payment_fees += fee_amount
-                        payment_fee_descriptions.append(f'Processing fee for payment {id}')
-                    else:
-                        # Fallback for other types (refunds, etc.)
-                        if transType == 'charge':
-                            charge_fees += fee_amount
-                            charge_fee_descriptions.append(f'Fee for {transType} {id}')
-                        else:
-                            payment_fees += fee_amount
-                            payment_fee_descriptions.append(f'Fee for {transType} {id}')
-
-                    if fee_accounting_date is None:
-                        fee_accounting_date = accounting_date
-                        fee_value_date = value_date
+                    category = 'charge' if transType == 'charge' else 'payment'
+                    add_monthly_fee(monthly_fees, category, fee_amount, accounting_date)
                 else:
                     # Create individual fee line (original behavior)
                     fee_description = f'Fees for payment {id} -- {description}'
@@ -745,40 +737,27 @@ def main():
                     ])
             progress.advance()
 
-    # If SUM_FEES is enabled, add separate summarized lines for each fee type
     if SUM_FEES:
-        if charge_fees > 0:
-            everhypeCSV.append([
-                fee_accounting_date,  # Buchungsdatum
-                STRIPE_NAME,          # Auftraggeber / Empfänger
-                'Stripe Processing Fees for Charges',  # Verwendungszweck
-                round(charge_fees * -1, 2),  # Betrag
-                charge_fees,          # Soll Betrag (Ausgabe) - fees are always expenses
-                "",                   # Haben Betrag (Einnahme)
-                fee_value_date,       # Wertstellungsdatum
-            ])
-
-        if payment_fees > 0:
-            everhypeCSV.append([
-                fee_accounting_date,  # Buchungsdatum
-                STRIPE_NAME,          # Auftraggeber / Empfänger
-                'Stripe Processing Fees for Payments',  # Verwendungszweck
-                round(payment_fees * -1, 2),  # Betrag
-                payment_fees,         # Soll Betrag (Ausgabe) - fees are always expenses
-                "",                   # Haben Betrag (Einnahme)
-                fee_value_date,       # Wertstellungsdatum
-            ])
-
-        if billing_usage_fees > 0:
-            everhypeCSV.append([
-                fee_accounting_date,  # Buchungsdatum
-                STRIPE_NAME,          # Auftraggeber / Empfänger
-                'Billing Usage Fee',  # Verwendungszweck
-                round(billing_usage_fees * -1, 2),  # Betrag
-                billing_usage_fees,   # Soll Betrag (Ausgabe) - fees are always expenses
-                "",                   # Haben Betrag (Einnahme)
-                fee_value_date,       # Wertstellungsdatum
-            ])
+        labels = {
+            'charge': 'Stripe Processing Fees for Charges',
+            'payment': 'Stripe Processing Fees for Payments',
+            'billing': 'Billing Usage Fee',
+        }
+        for month in sorted(monthly_fees):
+            for category, label in labels.items():
+                group = monthly_fees[month].get(category)
+                if group is None or group['amount'] <= 0:
+                    continue
+                fee_amount = float(round(group['amount'], 2))
+                everhypeCSV.append([
+                    group['accounting_date'],
+                    STRIPE_NAME,
+                    f'{label} ({month})',
+                    -fee_amount,
+                    fee_amount,
+                    "",
+                    group['value_date'],
+                ])
 
     # Writing to export file
     with open(export_filename, 'w', newline='', encoding='utf-8') as exportFile:

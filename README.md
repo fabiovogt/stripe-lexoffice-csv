@@ -61,7 +61,7 @@ STRIPE_NAME=Ihr Unternehmensname
 
 # Gebühren-Konfiguration
 # false = Einzelne Gebührenzeilen (Standard)
-# true = Alle Gebühren in einer Zeile zusammenfassen
+# true = Gebühren je Buchungsmonat und Kategorie zusammenfassen
 SUM_FEES=false
 
 # Datenquellen-Methode
@@ -116,7 +116,7 @@ python main.py --start-date 2024-01-15 --end-date 2024-01-21
 ### SUM_FEES
 
 - **`false`**: Erstellt für jede Transaktion eine separate Gebührenzeile
-- **`true`**: Fasst alle Gebühren in einer einzigen Zeile zusammen
+- **`true`**: Fasst Gebühren je Buchungsmonat (YYYY-MM) getrennt nach Charges, Payments und Billing Usage Fees zusammen. Jede Summenzeile nennt den Monat im Verwendungszweck und übernimmt das Buchungsdatum der frühesten zugehörigen Buchung. Das Wertstellungsdatum liegt immer auf dem letzten Tag des betreffenden Buchungsmonats.
 
 ### Beispiel-Ausgaben
 
