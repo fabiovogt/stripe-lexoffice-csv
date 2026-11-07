@@ -35,7 +35,7 @@ class MonthlyFeesTest(unittest.TestCase):
         fees = [r for r in exported if r['Auftraggeber / Empfänger'] == main.STRIPE_NAME]
         self.assertEqual(len(fees), 6)
         self.assertEqual([r['Betrag'] for r in fees], ['-0.1', '-0.5', '-0.7', '-0.3', '-0.4', '-0.6'])
-        self.assertEqual(fees[3]['Buchungsdatum'], '2027-01-02 12:00:00')
+        self.assertEqual(fees[3]['Buchungsdatum'], '2027-01-31 00:00:00')
         for row in fees:
             self.assertIn(row['Buchungsdatum'][:7], row['Verwendungszweck'])
             self.assertEqual(row['Wertstellungsdatum'], row['Buchungsdatum'][:7] + '-31 00:00:00')
@@ -76,4 +76,4 @@ class MonthlyFeesTest(unittest.TestCase):
                 self.assertEqual(len(fees), 3)
                 for fee in fees:
                     self.assertEqual(fee['Wertstellungsdatum'], expected)
-                    self.assertEqual(fee['Buchungsdatum'], booking_date)
+                    self.assertEqual(fee['Buchungsdatum'], expected)

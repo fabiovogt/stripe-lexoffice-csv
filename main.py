@@ -380,6 +380,31 @@ def read_csv():
     return csvlines
 
 
+def split_paypal_transfer(transaction):
+    """Remove PayPal passthrough fees already booked on the PayPal account.
+
+    Stripe processing fees stay separate, preserving amount - fee == net.
+    Only positive payments with explicit PayPal fee details are adjusted.
+    """
+    amount = transaction['amount']
+    fee = transaction['fee']
+    if amount <= 0 or transaction['type'] not in ('payment', 'charge'):
+        return amount, fee, False
+    details = transaction.get('fee_details') or []
+    paypal_details = [detail for detail in details
+                      if detail.get('type') == 'payment_method_passthrough_fee'
+                      and (detail.get('description') or '').strip().lower() == 'paypal fees']
+    if not paypal_details:
+        return amount, fee, False
+    if (any(detail.get('currency') != transaction['currency'] for detail in details)
+            or sum(detail['amount'] for detail in details) != fee):
+        raise ValueError('PayPal fee details do not reconcile with the Stripe transaction.')
+    paypal_fee = sum(detail['amount'] for detail in paypal_details)
+    if not 0 <= paypal_fee <= fee or paypal_fee > amount:
+        raise ValueError('Unexpected PayPal fee amount; export stopped to prevent incorrect totals.')
+    return amount - paypal_fee, fee - paypal_fee, True
+
+
 def fetch_balance_transactions(start_date, end_date):
     """
     Fetches balance transactions directly from the Stripe API
@@ -409,19 +434,21 @@ def fetch_balance_transactions(start_date, end_date):
         for transaction in balance_transactions.auto_paging_iter():
             # Convert balance transaction to CSV format
             # Adapt Stripe Balance Transaction format
+            amount, fee, paypal_transfer = split_paypal_transfer(transaction.to_dict())
             csv_row = [
                 transaction.id,  # id (0)
                 transaction.type,  # type (1)
                 transaction.source,  # source (2)
-                format_stripe_amount(transaction.amount),  # amount (3)
-                format_stripe_amount(transaction.fee),  # fee (4)
+                format_stripe_amount(amount),  # amount (3)
+                format_stripe_amount(fee),  # fee (4)
                 '',  # currency (5) - not used
                 '',  # net (6) - not used
                 '',  # reporting_category (7) - not used
                 '',  # customer_facing_amount (8) - not used
                 datetime.fromtimestamp(transaction.created).strftime('%Y-%m-%d %H:%M:%S'),  # created/accounting_date (9)
                 datetime.fromtimestamp(transaction.available_on).strftime('%Y-%m-%d %H:%M:%S'),  # available_on/value_date (10)
-                transaction.description or ''  # description (11)
+                transaction.description or '',  # description (11)
+                paypal_transfer,  # API-only marker (12); legacy CSV rows stay unchanged
             ]
             transactions.append(csv_row)
             progress.advance()
@@ -602,7 +629,7 @@ def generate_export_filename(start_date, end_date):
 
 
 def add_monthly_fee(groups, category, amount, accounting_date):
-    """Aggregate by booking month, retaining the earliest booking per category."""
+    """Aggregate by booking month with booking and value dates at month end."""
     booking_date = datetime.fromisoformat(accounting_date)
     month = booking_date.strftime('%Y-%m')
     month_end = booking_date.replace(
@@ -611,12 +638,10 @@ def add_monthly_fee(groups, category, amount, accounting_date):
     ).strftime('%Y-%m-%d %H:%M:%S')
     group = groups.setdefault(month, {}).setdefault(category, {
         'amount': Decimal('0'),
-        'accounting_date': accounting_date,
+        'accounting_date': month_end,
         'value_date': month_end,
     })
     group['amount'] += Decimal(str(amount))
-    if accounting_date < group['accounting_date']:
-        group['accounting_date'] = accounting_date
 
 
 def main():
@@ -675,6 +700,9 @@ def main():
             value_date = line[10]
             # --> description from original source or balance transaction
             description = line[11]
+            if len(line) > 12 and line[12] is True:
+                description = f'Geldtransit von PayPal zu Stripe - {customer}'
+                customer = 'PayPal'
 
             # Handle billing usage fees (stripe_fee) when SUM_FEES is enabled
             if transType == 'stripe_fee' and SUM_FEES:

@@ -113,10 +113,16 @@ python main.py --start-date 2024-01-15 --end-date 2024-01-21
 - **`CSV`**: Liest Transaktionen aus `import.csv`
 - **`API`**: Holt Transaktionen direkt von der Stripe API
 
+### PayPal-Konto bereits in Lexware angebunden
+
+Im API-Modus werden positive PayPal-Zahlungen mit expliziten `PayPal fees` in den Stripe-`fee_details` als Geldtransit von PayPal zu Stripe exportiert. Der Transferbetrag ist der Bruttobetrag abzüglich der PayPal-Gebühr. Die bereits auf dem PayPal-Konto erfasste PayPal-Gebühr wird nicht erneut als Stripe-Gebühr ausgegeben. Zusätzliche Stripe-Gebühren bleiben separat erhalten, auch bei monatlicher Aggregation.
+
+Beispiel: 9,00 € brutto − 0,66 € PayPal-Gebühr = 8,34 € Transfer; zusätzlich 0,12 € Stripe-Gebühr ergibt 8,22 € Stripe-Saldoänderung. Bei widersprüchlichen Gebührenbestandteilen wird der Export abgebrochen. Der CSV-Eingabemodus enthält diese API-Gebührendetails nicht und bleibt unverändert. Erstattungen werden durch diese Regel nicht verändert.
+
 ### SUM_FEES
 
 - **`false`**: Erstellt für jede Transaktion eine separate Gebührenzeile
-- **`true`**: Fasst Gebühren je Buchungsmonat (YYYY-MM) getrennt nach Charges, Payments und Billing Usage Fees zusammen. Jede Summenzeile nennt den Monat im Verwendungszweck und übernimmt das Buchungsdatum der frühesten zugehörigen Buchung. Das Wertstellungsdatum liegt immer auf dem letzten Tag des betreffenden Buchungsmonats.
+- **`true`**: Fasst Gebühren je Buchungsmonat (YYYY-MM) getrennt nach Charges, Payments und Billing Usage Fees zusammen. Jede Summenzeile nennt den Monat im Verwendungszweck. Buchungsdatum und Wertstellungsdatum liegen immer auf dem letzten Tag des betreffenden Buchungsmonats.
 
 ### Beispiel-Ausgaben
 
